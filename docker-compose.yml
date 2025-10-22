@@ -1,0 +1,167 @@
+version: '3.8'
+
+services:
+  # Redis - Message Queue
+  redis:
+    image: redis:7-alpine
+    container_name: doc-ingestion-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - doc-ingestion-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Weaviate - Vector Database
+  weaviate:
+    image: semitechnologies/weaviate:1.24.1
+    container_name: doc-ingestion-weaviate
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'none'
+      ENABLE_MODULES: ''
+      CLUSTER_HOSTNAME: 'node1'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    networks:
+      - doc-ingestion-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ingestion Service - API for file upload
+  ingestion_service:
+    build:
+      context: ./ingestion_service
+      dockerfile: Dockerfile
+    container_name: doc-ingestion-api
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - UPLOAD_DIR=/app/storage/uploads
+      - SQLITE_DB_PATH=/app/storage/metadata.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./shared:/app/shared:ro
+      - storage_data:/app/storage
+    networks:
+      - doc-ingestion-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Processing Service - Document parsing and chunking worker
+  processing_service:
+    build:
+      context: ./processing_service
+      dockerfile: Dockerfile
+    container_name: doc-ingestion-processing
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SQLITE_DB_PATH=/app/storage/metadata.db
+      - CHUNK_SIZE=${CHUNK_SIZE:-512}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-50}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./shared:/app/shared:ro
+      - storage_data:/app/storage
+    networks:
+      - doc-ingestion-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  # Embedding Service - Generate embeddings via Ollama
+  embedding_service:
+    build:
+      context: ./embedding_service
+      dockerfile: Dockerfile
+    container_name: doc-ingestion-embedding
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - WEAVIATE_HOST=weaviate
+      - WEAVIATE_PORT=8080
+      - OLLAMA_HOST=${OLLAMA_HOST:-host.docker.internal}
+      - OLLAMA_PORT=${OLLAMA_PORT:-11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-embedding:latest}
+      - SQLITE_DB_PATH=/app/storage/metadata.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./shared:/app/shared:ro
+      - storage_data:/app/storage
+    networks:
+      - doc-ingestion-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  # Query Service - Search and retrieval API
+  query_service:
+    build:
+      context: ./query_service
+      dockerfile: Dockerfile
+    container_name: doc-ingestion-query
+    ports:
+      - "8001:8001"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - WEAVIATE_HOST=weaviate
+      - WEAVIATE_PORT=8080
+      - OLLAMA_HOST=${OLLAMA_HOST:-host.docker.internal}
+      - OLLAMA_PORT=${OLLAMA_PORT:-11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-embedding:latest}
+      - SQLITE_DB_PATH=/app/storage/metadata.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./shared:/app/shared:ro
+      - storage_data:/app/storage
+    networks:
+      - doc-ingestion-network
+    depends_on:
+      weaviate:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+networks:
+  doc-ingestion-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local
+  weaviate_data:
+    driver: local
+  storage_data:
+    driver: local
