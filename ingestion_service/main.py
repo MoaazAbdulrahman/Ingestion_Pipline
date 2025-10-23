@@ -6,6 +6,7 @@ import sys
 sys.path.append('/app/shared')
 from logger import get_logger
 from config import settings
+from database import init_database
 
 from routes import ingest, health
 
@@ -21,6 +22,15 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Ingestion Service...")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Upload directory: {settings.UPLOAD_DIR}")
+    
+    # Initialize database on startup
+    try:
+        logger.info("Initializing database...")
+        init_database()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        # Don't fail startup, just log the error
     
     yield
     
