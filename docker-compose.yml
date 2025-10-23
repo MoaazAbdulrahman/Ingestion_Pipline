@@ -44,8 +44,8 @@ services:
   # Ingestion Service - API for file upload
   ingestion_service:
     build:
-      context: ./ingestion_service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ingestion_service/Dockerfile
     container_name: doc-ingestion-api
     ports:
       - "8000:8000"
@@ -120,7 +120,7 @@ services:
       weaviate:
         condition: service_healthy
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:172.17.0.1"
     restart: unless-stopped
     deploy:
       replicas: 1
